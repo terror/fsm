@@ -202,35 +202,23 @@ where
 
 #[macro_export]
 macro_rules! machine {
-  (@build [$($builder:tt)*] ,) => {
-    $($builder)*.build()
-  };
   (@build [$($builder:tt)*]) => {
     $($builder)*.build()
   };
-  (@build [$($builder:tt)*] , on_enter $state:expr => $callback:expr, $($rest:tt)*) => {
-    $crate::machine!(@build [$($builder)*.on_enter($state, $callback)], $($rest)*)
+  (@build [$($builder:tt)*] ,) => {
+    $($builder)*.build()
   };
-  (@build [$($builder:tt)*] , on_enter $state:expr => $callback:expr) => {
-    $crate::machine!(@build [$($builder)*.on_enter($state, $callback)])
+  (@build [$($builder:tt)*] , on_enter $state:expr => $callback:expr $(, $($rest:tt)*)?) => {
+    $crate::machine!(@build [$($builder)*.on_enter($state, $callback)] $(, $($rest)*)?)
   };
-  (@build [$($builder:tt)*] , on_exit $state:expr => $callback:expr, $($rest:tt)*) => {
-    $crate::machine!(@build [$($builder)*.on_exit($state, $callback)], $($rest)*)
+  (@build [$($builder:tt)*] , on_exit $state:expr => $callback:expr $(, $($rest:tt)*)?) => {
+    $crate::machine!(@build [$($builder)*.on_exit($state, $callback)] $(, $($rest)*)?)
   };
-  (@build [$($builder:tt)*] , on_exit $state:expr => $callback:expr) => {
-    $crate::machine!(@build [$($builder)*.on_exit($state, $callback)])
+  (@build [$($builder:tt)*] , on_transition => $callback:expr $(, $($rest:tt)*)?) => {
+    $crate::machine!(@build [$($builder)*.on_transition($callback)] $(, $($rest)*)?)
   };
-  (@build [$($builder:tt)*] , on_transition => $callback:expr, $($rest:tt)*) => {
-    $crate::machine!(@build [$($builder)*.on_transition($callback)], $($rest)*)
-  };
-  (@build [$($builder:tt)*] , on_transition => $callback:expr) => {
-    $crate::machine!(@build [$($builder)*.on_transition($callback)])
-  };
-  (@build [$($builder:tt)*] , $from:expr, $event:expr => $to:expr, $($rest:tt)*) => {
-    $crate::machine!(@build [$($builder)*.transition($from, $event, $to)], $($rest)*)
-  };
-  (@build [$($builder:tt)*] , $from:expr, $event:expr => $to:expr) => {
-    $crate::machine!(@build [$($builder)*.transition($from, $event, $to)])
+  (@build [$($builder:tt)*] , $from:expr, $event:expr => $to:expr $(, $($rest:tt)*)?) => {
+    $crate::machine!(@build [$($builder)*.transition($from, $event, $to)] $(, $($rest)*)?)
   };
   (initial: $initial:expr, $($rest:tt)*) => {
     $crate::machine!(@build [$crate::Builder::new().initial($initial)], $($rest)*)
