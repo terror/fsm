@@ -40,6 +40,16 @@ where
   S: Clone + Eq + Hash + Display + fmt::Debug,
   E: Clone + Eq + Hash + Display + fmt::Debug,
 {
+  pub fn can_send(&self, event: &E) -> bool {
+    let key = (self.state.clone(), event.clone());
+
+    self.guarded_transitions.get(&key).is_some_and(|guards| {
+      guards
+        .iter()
+        .any(|(guard, _)| guard(&self.state, event, &self.context))
+    }) || self.transitions.contains_key(&key)
+  }
+
   pub fn context(&self) -> &C {
     &self.context
   }

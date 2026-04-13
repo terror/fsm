@@ -414,6 +414,45 @@ mod tests {
   }
 
   #[test]
+  fn can_send() {
+    let machine = machine();
+
+    assert!(machine.can_send(&Event::A));
+    assert!(!machine.can_send(&Event::B));
+  }
+
+  #[test]
+  fn can_send_guard() {
+    #[track_caller]
+    fn case(context: u32, expected: bool) {
+      let machine = machine! {
+        initial: State::Foo,
+        context: context,
+        State::Foo, Event::A => State::Bar, if |_from, _event, ctx: &u32| *ctx > 0,
+      }
+      .unwrap();
+
+      assert_eq!(machine.can_send(&Event::A), expected);
+    }
+
+    case(0, false);
+    case(1, true);
+  }
+
+  #[test]
+  fn can_send_guard_with_fallback() {
+    let machine = machine! {
+      initial: State::Foo,
+      context: 0u32,
+      State::Foo, Event::A => State::Bar, if |_from, _event, ctx: &u32| *ctx > 0,
+      State::Foo, Event::A => State::Baz,
+    }
+    .unwrap();
+
+    assert!(machine.can_send(&Event::A));
+  }
+
+  #[test]
   fn transition_overwrites() {
     let mut machine: Machine<State, Event> = machine! {
       initial: State::Foo,
