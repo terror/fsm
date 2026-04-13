@@ -98,6 +98,20 @@ where
   }
 }
 
+#[macro_export]
+macro_rules! machine {
+  (
+    initial: $initial:expr,
+    $($from:expr, $event:expr => $to:expr),+
+    $(,)?
+  ) => {
+    $crate::Builder::new()
+      .initial($initial)
+      $(.transition($from, $event, $to))+
+      .build()
+  };
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -116,13 +130,13 @@ mod tests {
   }
 
   fn machine() -> Machine<State, Event> {
-    Builder::new()
-      .initial(State::Foo)
-      .transition(State::Foo, Event::A, State::Bar)
-      .transition(State::Bar, Event::B, State::Baz)
-      .transition(State::Baz, Event::A, State::Foo)
-      .build()
-      .unwrap()
+    machine! {
+      initial: State::Foo,
+      State::Foo, Event::A => State::Bar,
+      State::Bar, Event::B => State::Baz,
+      State::Baz, Event::A => State::Foo,
+    }
+    .unwrap()
   }
 
   #[test]
@@ -170,23 +184,23 @@ mod tests {
 
   #[test]
   fn transition_overwrites() {
-    let mut machine = Builder::new()
-      .initial(State::Foo)
-      .transition(State::Foo, Event::A, State::Bar)
-      .transition(State::Foo, Event::A, State::Baz)
-      .build()
-      .unwrap();
+    let mut machine = machine! {
+      initial: State::Foo,
+      State::Foo, Event::A => State::Bar,
+      State::Foo, Event::A => State::Baz,
+    }
+    .unwrap();
 
     assert_eq!(machine.send(Event::A).unwrap(), &State::Baz);
   }
 
   #[test]
   fn self_transition() {
-    let mut machine = Builder::new()
-      .initial(State::Foo)
-      .transition(State::Foo, Event::A, State::Foo)
-      .build()
-      .unwrap();
+    let mut machine = machine! {
+      initial: State::Foo,
+      State::Foo, Event::A => State::Foo,
+    }
+    .unwrap();
 
     assert_eq!(machine.send(Event::A).unwrap(), &State::Foo);
     assert_eq!(machine.send(Event::A).unwrap(), &State::Foo);
