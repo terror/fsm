@@ -11,19 +11,21 @@ mod error;
 
 pub use error::Error;
 
-type Callback<S, E> = Box<dyn Fn(&S, &E, &S)>;
+type Callback<S, E, C> = Box<dyn Fn(&S, &E, &S, &mut C)>;
 
-pub struct Builder<S, E> {
+pub struct Builder<S, E, C = ()> {
+  context: Option<C>,
   initial: Option<S>,
-  on_enter: HashMap<S, Vec<Callback<S, E>>>,
-  on_exit: HashMap<S, Vec<Callback<S, E>>>,
-  on_transition: Vec<Callback<S, E>>,
+  on_enter: HashMap<S, Vec<Callback<S, E, C>>>,
+  on_exit: HashMap<S, Vec<Callback<S, E, C>>>,
+  on_transition: Vec<Callback<S, E, C>>,
   transitions: HashMap<(S, E), S>,
 }
 
-impl<S, E> Default for Builder<S, E> {
+impl<S, E, C: Default> Default for Builder<S, E, C> {
   fn default() -> Self {
     Self {
+      context: Some(C::default()),
       initial: None,
       on_enter: HashMap::new(),
       on_exit: HashMap::new(),
@@ -33,13 +35,15 @@ impl<S, E> Default for Builder<S, E> {
   }
 }
 
-impl<S, E> fmt::Debug for Builder<S, E>
+impl<S, E, C> fmt::Debug for Builder<S, E, C>
 where
   S: fmt::Debug,
   E: fmt::Debug,
+  C: fmt::Debug,
 {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     f.debug_struct("Builder")
+      .field("context", &self.context)
       .field("initial", &self.initial)
       .field("on_enter", &format!("[{} hooks]", self.on_enter.len()))
       .field("on_exit", &format!("[{} hooks]", self.on_exit.len()))
@@ -52,16 +56,18 @@ where
   }
 }
 
-impl<S, E> Builder<S, E>
+impl<S, E, C> Builder<S, E, C>
 where
   S: Clone + Eq + Hash + Display + fmt::Debug,
   E: Eq + Hash + Display + fmt::Debug,
 {
   /// # Errors
   ///
+  /// Returns `Error::NoContext` if no context was set.
   /// Returns `Error::NoInitialState` if no initial state was set.
-  pub fn build(self) -> Result<Machine<S, E>, Error<S, E>> {
+  pub fn build(self) -> Result<Machine<S, E, C>, Error<S, E>> {
     Ok(Machine {
+      context: self.context.ok_or(Error::NoContext)?,
       on_enter: self.on_enter,
       on_exit: self.on_exit,
       on_transition: self.on_transition,
@@ -71,13 +77,22 @@ where
   }
 
   #[must_use]
+  pub fn context(mut self, context: C) -> Self {
+    self.context = Some(context);
+    self
+  }
+
+  #[must_use]
   pub fn initial(mut self, state: S) -> Self {
     self.initial = Some(state);
     self
   }
 
   #[must_use]
-  pub fn new() -> Self {
+  pub fn new() -> Self
+  where
+    C: Default,
+  {
     Self::default()
   }
 
@@ -85,7 +100,7 @@ where
   pub fn on_enter(
     mut self,
     state: S,
-    callback: impl Fn(&S, &E, &S) + 'static,
+    callback: impl Fn(&S, &E, &S, &mut C) + 'static,
   ) -> Self {
     self
       .on_enter
@@ -100,7 +115,7 @@ where
   pub fn on_exit(
     mut self,
     state: S,
-    callback: impl Fn(&S, &E, &S) + 'static,
+    callback: impl Fn(&S, &E, &S, &mut C) + 'static,
   ) -> Self {
     self
       .on_exit
@@ -114,7 +129,7 @@ where
   #[must_use]
   pub fn on_transition(
     mut self,
-    callback: impl Fn(&S, &E, &S) + 'static,
+    callback: impl Fn(&S, &E, &S, &mut C) + 'static,
   ) -> Self {
     self.on_transition.push(Box::new(callback));
     self
@@ -125,23 +140,38 @@ where
     self.transitions.insert((from, event), to);
     self
   }
+
+  #[must_use]
+  pub fn with_context(context: C) -> Self {
+    Self {
+      context: Some(context),
+      initial: None,
+      on_enter: HashMap::new(),
+      on_exit: HashMap::new(),
+      on_transition: Vec::new(),
+      transitions: HashMap::new(),
+    }
+  }
 }
 
-pub struct Machine<S, E> {
-  on_enter: HashMap<S, Vec<Callback<S, E>>>,
-  on_exit: HashMap<S, Vec<Callback<S, E>>>,
-  on_transition: Vec<Callback<S, E>>,
+pub struct Machine<S, E, C = ()> {
+  context: C,
+  on_enter: HashMap<S, Vec<Callback<S, E, C>>>,
+  on_exit: HashMap<S, Vec<Callback<S, E, C>>>,
+  on_transition: Vec<Callback<S, E, C>>,
   state: S,
   transitions: HashMap<(S, E), S>,
 }
 
-impl<S, E> fmt::Debug for Machine<S, E>
+impl<S, E, C> fmt::Debug for Machine<S, E, C>
 where
   S: fmt::Debug,
   E: fmt::Debug,
+  C: fmt::Debug,
 {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     f.debug_struct("Machine")
+      .field("context", &self.context)
       .field("on_enter", &format!("[{} hooks]", self.on_enter.len()))
       .field("on_exit", &format!("[{} hooks]", self.on_exit.len()))
       .field(
@@ -154,11 +184,19 @@ where
   }
 }
 
-impl<S, E> Machine<S, E>
+impl<S, E, C> Machine<S, E, C>
 where
   S: Clone + Eq + Hash + Display + fmt::Debug,
   E: Clone + Eq + Hash + Display + fmt::Debug,
 {
+  pub fn context(&self) -> &C {
+    &self.context
+  }
+
+  pub fn context_mut(&mut self) -> &mut C {
+    &mut self.context
+  }
+
   /// # Errors
   ///
   /// Returns `Error::NoTransition` if no transition exists for the
@@ -176,17 +214,17 @@ where
 
     if let Some(hooks) = self.on_exit.get(&from) {
       for hook in hooks {
-        hook(&from, &event, &to);
+        hook(&from, &event, &to, &mut self.context);
       }
     }
 
     for hook in &self.on_transition {
-      hook(&from, &event, &to);
+      hook(&from, &event, &to, &mut self.context);
     }
 
     if let Some(hooks) = self.on_enter.get(&to) {
       for hook in hooks {
-        hook(&from, &event, &to);
+        hook(&from, &event, &to, &mut self.context);
       }
     }
 
@@ -220,6 +258,12 @@ macro_rules! machine {
   (@build [$($builder:tt)*] , $from:expr, $event:expr => $to:expr $(, $($rest:tt)*)?) => {
     $crate::machine!(@build [$($builder)*.transition($from, $event, $to)] $(, $($rest)*)?)
   };
+  (initial: $initial:expr, context: $context:expr, $($rest:tt)*) => {
+    $crate::machine!(@build [$crate::Builder::with_context($context).initial($initial)], $($rest)*)
+  };
+  (initial: $initial:expr, context: $context:expr $(,)?) => {
+    $crate::machine!(@build [$crate::Builder::with_context($context).initial($initial)])
+  };
   (initial: $initial:expr, $($rest:tt)*) => {
     $crate::machine!(@build [$crate::Builder::new().initial($initial)], $($rest)*)
   };
@@ -230,10 +274,7 @@ macro_rules! machine {
 
 #[cfg(test)]
 mod tests {
-  use {
-    super::*,
-    std::{cell::Cell, rc::Rc},
-  };
+  use super::*;
 
   #[derive(Clone, Debug, Eq, Hash, PartialEq, derive_more::Display)]
   enum State {
@@ -259,34 +300,128 @@ mod tests {
   }
 
   #[test]
+  fn callback_order() {
+    let on_exit = |_: &State, _: &Event, _: &State, ctx: &mut Vec<&str>| {
+      ctx.push("exit");
+    };
+
+    let on_transition =
+      |_: &State, _: &Event, _: &State, ctx: &mut Vec<&str>| {
+        ctx.push("transition");
+      };
+
+    let on_enter = |_: &State, _: &Event, _: &State, ctx: &mut Vec<&str>| {
+      ctx.push("enter");
+    };
+
+    let mut machine = machine! {
+      initial: State::Foo,
+      context: Vec::<&str>::new(),
+      State::Foo, Event::A => State::Bar,
+      on_exit State::Foo => on_exit,
+      on_transition => on_transition,
+      on_enter State::Bar => on_enter,
+    }
+    .unwrap();
+
+    machine.send(Event::A).unwrap();
+
+    assert_eq!(machine.context(), &["exit", "transition", "enter"]);
+  }
+
+  #[test]
+  fn callback_receives_args() {
+    let mut machine = machine! {
+      initial: State::Foo,
+      context: Vec::<String>::new(),
+      State::Foo, Event::A => State::Bar,
+      on_transition => |from, event, to, ctx: &mut Vec<String>| {
+        ctx.push(format!("{from}+{event}=>{to}"));
+      },
+    }
+    .unwrap();
+
+    machine.send(Event::A).unwrap();
+
+    assert_eq!(machine.context(), &["Foo+A=>Bar"]);
+  }
+
+  #[test]
+  fn context_mut() {
+    let mut machine = machine! {
+      initial: State::Foo,
+      context: 0u32,
+      State::Foo, Event::A => State::Bar,
+    }
+    .unwrap();
+
+    *machine.context_mut() = 99;
+    assert_eq!(*machine.context(), 99);
+  }
+
+  #[test]
   fn initial_state() {
     assert_eq!(machine().state(), &State::Foo);
   }
 
   #[test]
-  fn send_transitions_state() {
-    let mut machine = machine();
+  fn macro_context_only() {
+    let machine: Machine<State, Event, u32> = machine! {
+      initial: State::Foo,
+      context: 42u32,
+    }
+    .unwrap();
 
-    assert_eq!(machine.send(Event::A).unwrap(), &State::Bar);
-    assert_eq!(machine.state(), &State::Bar);
+    assert_eq!(machine.state(), &State::Foo);
+    assert_eq!(*machine.context(), 42);
   }
 
   #[test]
-  fn send_chain() {
-    let mut machine = machine();
-
-    machine.send(Event::A).unwrap();
-    machine.send(Event::B).unwrap();
-    machine.send(Event::A).unwrap();
+  fn macro_initial_only() {
+    let machine: Machine<State, Event> = machine! {
+      initial: State::Foo,
+    }
+    .unwrap();
 
     assert_eq!(machine.state(), &State::Foo);
   }
 
   #[test]
-  fn no_transition() {
+  fn macro_transitions_only() {
+    let mut machine: Machine<State, Event> = machine! {
+      initial: State::Foo,
+      State::Foo, Event::A => State::Bar,
+    }
+    .unwrap();
+
+    assert_eq!(machine.send(Event::A).unwrap(), &State::Bar);
+  }
+
+  #[test]
+  fn no_callbacks_on_failed_transition() {
+    let mut machine = machine! {
+      initial: State::Foo,
+      context: 0u32,
+      State::Foo, Event::A => State::Bar,
+      on_transition => |_from, _event, _to, ctx: &mut u32| {
+        *ctx += 1;
+      },
+    }
+    .unwrap();
+
+    let _ = machine.send(Event::B);
+
+    assert_eq!(*machine.context(), 0);
+  }
+
+  #[test]
+  fn no_context() {
     assert_eq!(
-      machine().send(Event::B).unwrap_err().to_string(),
-      "no transition from state `Foo` on event `B`"
+      Builder::<State, Event, String>::with_context(String::new())
+        .build()
+        .unwrap_err()
+        .to_string(),
+      "no initial state set"
     );
   }
 
@@ -302,8 +437,124 @@ mod tests {
   }
 
   #[test]
-  fn transition_overwrites() {
+  fn no_transition() {
+    assert_eq!(
+      machine().send(Event::B).unwrap_err().to_string(),
+      "no transition from state `Foo` on event `B`"
+    );
+  }
+
+  #[test]
+  fn on_enter() {
     let mut machine = machine! {
+      initial: State::Foo,
+      context: 0u32,
+      State::Foo, Event::A => State::Bar,
+      State::Bar, Event::B => State::Baz,
+      on_enter State::Bar => |_from, _event, _to, ctx: &mut u32| {
+        *ctx += 1;
+      },
+    }
+    .unwrap();
+
+    machine.send(Event::A).unwrap();
+    assert_eq!(*machine.context(), 1);
+
+    machine.send(Event::B).unwrap();
+    assert_eq!(*machine.context(), 1);
+  }
+
+  #[test]
+  fn on_exit() {
+    let mut machine = machine! {
+      initial: State::Foo,
+      context: 0u32,
+      State::Foo, Event::A => State::Bar,
+      State::Bar, Event::B => State::Baz,
+      on_exit State::Foo => |_from, _event, _to, ctx: &mut u32| {
+        *ctx += 1;
+      },
+    }
+    .unwrap();
+
+    machine.send(Event::A).unwrap();
+    assert_eq!(*machine.context(), 1);
+
+    machine.send(Event::B).unwrap();
+    assert_eq!(*machine.context(), 1);
+  }
+
+  #[test]
+  fn on_transition() {
+    let mut machine = machine! {
+      initial: State::Foo,
+      context: 0u32,
+      State::Foo, Event::A => State::Bar,
+      State::Bar, Event::B => State::Baz,
+      on_transition => |_from, _event, _to, ctx: &mut u32| {
+        *ctx += 1;
+      },
+    }
+    .unwrap();
+
+    machine.send(Event::A).unwrap();
+    assert_eq!(*machine.context(), 1);
+
+    machine.send(Event::B).unwrap();
+    assert_eq!(*machine.context(), 2);
+  }
+
+  #[test]
+  fn self_transition() {
+    let mut machine: Machine<State, Event> = machine! {
+      initial: State::Foo,
+      State::Foo, Event::A => State::Foo,
+    }
+    .unwrap();
+
+    assert_eq!(machine.send(Event::A).unwrap(), &State::Foo);
+    assert_eq!(machine.send(Event::A).unwrap(), &State::Foo);
+  }
+
+  #[test]
+  fn self_transition_fires_callbacks() {
+    let mut machine = machine! {
+      initial: State::Foo,
+      context: 0u32,
+      State::Foo, Event::A => State::Foo,
+      on_enter State::Foo => |_from, _event, _to, ctx: &mut u32| {
+        *ctx += 1;
+      },
+    }
+    .unwrap();
+
+    machine.send(Event::A).unwrap();
+
+    assert_eq!(*machine.context(), 1);
+  }
+
+  #[test]
+  fn send_chain() {
+    let mut machine = machine();
+
+    machine.send(Event::A).unwrap();
+    machine.send(Event::B).unwrap();
+    machine.send(Event::A).unwrap();
+
+    assert_eq!(machine.state(), &State::Foo);
+  }
+
+  #[test]
+  fn send_transitions_state() {
+    let mut machine = machine();
+
+    assert_eq!(machine.send(Event::A).unwrap(), &State::Bar);
+    assert_eq!(machine.state(), &State::Bar);
+  }
+
+  #[test]
+  fn transition_overwrites() {
+    let mut machine: Machine<State, Event> = machine! {
       initial: State::Foo,
       State::Foo, Event::A => State::Bar,
       State::Foo, Event::A => State::Baz,
@@ -314,194 +565,19 @@ mod tests {
   }
 
   #[test]
-  fn self_transition() {
+  fn with_context() {
     let mut machine = machine! {
       initial: State::Foo,
-      State::Foo, Event::A => State::Foo,
-    }
-    .unwrap();
-
-    assert_eq!(machine.send(Event::A).unwrap(), &State::Foo);
-    assert_eq!(machine.send(Event::A).unwrap(), &State::Foo);
-  }
-
-  #[test]
-  fn on_enter() {
-    let count = Rc::new(Cell::new(0));
-    let counter = count.clone();
-
-    let mut machine = machine! {
-      initial: State::Foo,
+      context: Vec::<String>::new(),
       State::Foo, Event::A => State::Bar,
-      State::Bar, Event::B => State::Baz,
-      on_enter State::Bar => move |_from, _event, _to| {
-        counter.set(counter.get() + 1);
-      },
-    }
-    .unwrap();
-
-    machine.send(Event::A).unwrap();
-    assert_eq!(count.get(), 1);
-
-    machine.send(Event::B).unwrap();
-    assert_eq!(count.get(), 1);
-  }
-
-  #[test]
-  fn on_exit() {
-    let count = Rc::new(Cell::new(0));
-    let counter = count.clone();
-
-    let mut machine = machine! {
-      initial: State::Foo,
-      State::Foo, Event::A => State::Bar,
-      State::Bar, Event::B => State::Baz,
-      on_exit State::Foo => move |_from, _event, _to| {
-        counter.set(counter.get() + 1);
-      },
-    }
-    .unwrap();
-
-    machine.send(Event::A).unwrap();
-    assert_eq!(count.get(), 1);
-
-    machine.send(Event::B).unwrap();
-    assert_eq!(count.get(), 1);
-  }
-
-  #[test]
-  fn on_transition() {
-    let count = Rc::new(Cell::new(0));
-    let counter = count.clone();
-
-    let mut machine = machine! {
-      initial: State::Foo,
-      State::Foo, Event::A => State::Bar,
-      State::Bar, Event::B => State::Baz,
-      on_transition => move |_from, _event, _to| {
-        counter.set(counter.get() + 1);
-      },
-    }
-    .unwrap();
-
-    machine.send(Event::A).unwrap();
-    assert_eq!(count.get(), 1);
-
-    machine.send(Event::B).unwrap();
-    assert_eq!(count.get(), 2);
-  }
-
-  #[test]
-  fn callback_order() {
-    let log = Rc::new(Cell::new(Vec::new()));
-
-    let push = |log: &Rc<Cell<Vec<&'static str>>>, tag: &'static str| {
-      let mut v = log.take();
-      v.push(tag);
-      log.set(v);
-    };
-
-    let l = log.clone();
-    let on_exit = move |_: &State, _: &Event, _: &State| push(&l, "exit");
-
-    let l = log.clone();
-    let on_transition =
-      move |_: &State, _: &Event, _: &State| push(&l, "transition");
-
-    let l = log.clone();
-    let on_enter = move |_: &State, _: &Event, _: &State| push(&l, "enter");
-
-    let mut machine = machine! {
-      initial: State::Foo,
-      State::Foo, Event::A => State::Bar,
-      on_exit State::Foo => on_exit,
-      on_transition => on_transition,
-      on_enter State::Bar => on_enter,
-    }
-    .unwrap();
-
-    machine.send(Event::A).unwrap();
-
-    assert_eq!(log.take(), vec!["exit", "transition", "enter"]);
-  }
-
-  #[test]
-  fn callback_receives_context() {
-    let log = Rc::new(Cell::new(Vec::new()));
-    let l = log.clone();
-
-    let mut machine = machine! {
-      initial: State::Foo,
-      State::Foo, Event::A => State::Bar,
-      on_transition => move |from, event, to| {
-        let mut v = l.take();
-        v.push(format!("{from}+{event}=>{to}"));
-        l.set(v);
+      on_transition => |from, _event, to, ctx: &mut Vec<String>| {
+        ctx.push(format!("{from}->{to}"));
       },
     }
     .unwrap();
 
     machine.send(Event::A).unwrap();
 
-    assert_eq!(log.take(), vec!["Foo+A=>Bar"]);
-  }
-
-  #[test]
-  fn no_callbacks_on_failed_transition() {
-    let count = Rc::new(Cell::new(0));
-    let counter = count.clone();
-
-    let mut machine = machine! {
-      initial: State::Foo,
-      State::Foo, Event::A => State::Bar,
-      on_transition => move |_from, _event, _to| {
-        counter.set(counter.get() + 1);
-      },
-    }
-    .unwrap();
-
-    let _ = machine.send(Event::B);
-
-    assert_eq!(count.get(), 0);
-  }
-
-  #[test]
-  fn self_transition_fires_callbacks() {
-    let count = Rc::new(Cell::new(0));
-    let counter = count.clone();
-
-    let mut machine = machine! {
-      initial: State::Foo,
-      State::Foo, Event::A => State::Foo,
-      on_enter State::Foo => move |_from, _event, _to| {
-        counter.set(counter.get() + 1);
-      },
-    }
-    .unwrap();
-
-    machine.send(Event::A).unwrap();
-
-    assert_eq!(count.get(), 1);
-  }
-
-  #[test]
-  fn macro_transitions_only() {
-    let mut machine = machine! {
-      initial: State::Foo,
-      State::Foo, Event::A => State::Bar,
-    }
-    .unwrap();
-
-    assert_eq!(machine.send(Event::A).unwrap(), &State::Bar);
-  }
-
-  #[test]
-  fn macro_initial_only() {
-    let machine: Machine<State, Event> = machine! {
-      initial: State::Foo,
-    }
-    .unwrap();
-
-    assert_eq!(machine.state(), &State::Foo);
+    assert_eq!(machine.context(), &["Foo->Bar"]);
   }
 }
