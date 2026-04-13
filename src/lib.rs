@@ -206,15 +206,41 @@ where
 
 #[macro_export]
 macro_rules! machine {
-  (
-    initial: $initial:expr,
-    $($from:expr, $event:expr => $to:expr),+
-    $(,)?
-  ) => {
-    $crate::Builder::new()
-      .initial($initial)
-      $(.transition($from, $event, $to))+
-      .build()
+  (@build [$($builder:tt)*] ,) => {
+    $($builder)*.build()
+  };
+  (@build [$($builder:tt)*]) => {
+    $($builder)*.build()
+  };
+  (@build [$($builder:tt)*] , on_enter $state:expr => $callback:expr, $($rest:tt)*) => {
+    $crate::machine!(@build [$($builder)*.on_enter($state, $callback)], $($rest)*)
+  };
+  (@build [$($builder:tt)*] , on_enter $state:expr => $callback:expr) => {
+    $crate::machine!(@build [$($builder)*.on_enter($state, $callback)])
+  };
+  (@build [$($builder:tt)*] , on_exit $state:expr => $callback:expr, $($rest:tt)*) => {
+    $crate::machine!(@build [$($builder)*.on_exit($state, $callback)], $($rest)*)
+  };
+  (@build [$($builder:tt)*] , on_exit $state:expr => $callback:expr) => {
+    $crate::machine!(@build [$($builder)*.on_exit($state, $callback)])
+  };
+  (@build [$($builder:tt)*] , on_transition => $callback:expr, $($rest:tt)*) => {
+    $crate::machine!(@build [$($builder)*.on_transition($callback)], $($rest)*)
+  };
+  (@build [$($builder:tt)*] , on_transition => $callback:expr) => {
+    $crate::machine!(@build [$($builder)*.on_transition($callback)])
+  };
+  (@build [$($builder:tt)*] , $from:expr, $event:expr => $to:expr, $($rest:tt)*) => {
+    $crate::machine!(@build [$($builder)*.transition($from, $event, $to)], $($rest)*)
+  };
+  (@build [$($builder:tt)*] , $from:expr, $event:expr => $to:expr) => {
+    $crate::machine!(@build [$($builder)*.transition($from, $event, $to)])
+  };
+  (initial: $initial:expr, $($rest:tt)*) => {
+    $crate::machine!(@build [$crate::Builder::new().initial($initial)], $($rest)*)
+  };
+  (initial: $initial:expr $(,)?) => {
+    $crate::machine!(@build [$crate::Builder::new().initial($initial)])
   };
 }
 
@@ -320,15 +346,15 @@ mod tests {
     let count = Rc::new(Cell::new(0));
     let counter = count.clone();
 
-    let mut machine = Builder::new()
-      .initial(State::Foo)
-      .transition(State::Foo, Event::A, State::Bar)
-      .transition(State::Bar, Event::B, State::Baz)
-      .on_enter(State::Bar, move |_from, _event, _to| {
+    let mut machine = machine! {
+      initial: State::Foo,
+      State::Foo, Event::A => State::Bar,
+      State::Bar, Event::B => State::Baz,
+      on_enter State::Bar => move |_from, _event, _to| {
         counter.set(counter.get() + 1);
-      })
-      .build()
-      .unwrap();
+      },
+    }
+    .unwrap();
 
     machine.send(Event::A).unwrap();
     assert_eq!(count.get(), 1);
@@ -342,15 +368,15 @@ mod tests {
     let count = Rc::new(Cell::new(0));
     let counter = count.clone();
 
-    let mut machine = Builder::new()
-      .initial(State::Foo)
-      .transition(State::Foo, Event::A, State::Bar)
-      .transition(State::Bar, Event::B, State::Baz)
-      .on_exit(State::Foo, move |_from, _event, _to| {
+    let mut machine = machine! {
+      initial: State::Foo,
+      State::Foo, Event::A => State::Bar,
+      State::Bar, Event::B => State::Baz,
+      on_exit State::Foo => move |_from, _event, _to| {
         counter.set(counter.get() + 1);
-      })
-      .build()
-      .unwrap();
+      },
+    }
+    .unwrap();
 
     machine.send(Event::A).unwrap();
     assert_eq!(count.get(), 1);
@@ -364,15 +390,15 @@ mod tests {
     let count = Rc::new(Cell::new(0));
     let counter = count.clone();
 
-    let mut machine = Builder::new()
-      .initial(State::Foo)
-      .transition(State::Foo, Event::A, State::Bar)
-      .transition(State::Bar, Event::B, State::Baz)
-      .on_transition(move |_from, _event, _to| {
+    let mut machine = machine! {
+      initial: State::Foo,
+      State::Foo, Event::A => State::Bar,
+      State::Bar, Event::B => State::Baz,
+      on_transition => move |_from, _event, _to| {
         counter.set(counter.get() + 1);
-      })
-      .build()
-      .unwrap();
+      },
+    }
+    .unwrap();
 
     machine.send(Event::A).unwrap();
     assert_eq!(count.get(), 1);
@@ -401,14 +427,14 @@ mod tests {
     let l = log.clone();
     let on_enter = move |_: &State, _: &Event, _: &State| push(&l, "enter");
 
-    let mut machine = Builder::new()
-      .initial(State::Foo)
-      .transition(State::Foo, Event::A, State::Bar)
-      .on_exit(State::Foo, on_exit)
-      .on_transition(on_transition)
-      .on_enter(State::Bar, on_enter)
-      .build()
-      .unwrap();
+    let mut machine = machine! {
+      initial: State::Foo,
+      State::Foo, Event::A => State::Bar,
+      on_exit State::Foo => on_exit,
+      on_transition => on_transition,
+      on_enter State::Bar => on_enter,
+    }
+    .unwrap();
 
     machine.send(Event::A).unwrap();
 
@@ -420,16 +446,16 @@ mod tests {
     let log = Rc::new(Cell::new(Vec::new()));
     let l = log.clone();
 
-    let mut machine = Builder::new()
-      .initial(State::Foo)
-      .transition(State::Foo, Event::A, State::Bar)
-      .on_transition(move |from, event, to| {
+    let mut machine = machine! {
+      initial: State::Foo,
+      State::Foo, Event::A => State::Bar,
+      on_transition => move |from, event, to| {
         let mut v = l.take();
         v.push(format!("{from}+{event}=>{to}"));
         l.set(v);
-      })
-      .build()
-      .unwrap();
+      },
+    }
+    .unwrap();
 
     machine.send(Event::A).unwrap();
 
@@ -441,14 +467,14 @@ mod tests {
     let count = Rc::new(Cell::new(0));
     let counter = count.clone();
 
-    let mut machine = Builder::new()
-      .initial(State::Foo)
-      .transition(State::Foo, Event::A, State::Bar)
-      .on_transition(move |_from, _event, _to| {
+    let mut machine = machine! {
+      initial: State::Foo,
+      State::Foo, Event::A => State::Bar,
+      on_transition => move |_from, _event, _to| {
         counter.set(counter.get() + 1);
-      })
-      .build()
-      .unwrap();
+      },
+    }
+    .unwrap();
 
     let _ = machine.send(Event::B);
 
@@ -460,17 +486,38 @@ mod tests {
     let count = Rc::new(Cell::new(0));
     let counter = count.clone();
 
-    let mut machine = Builder::new()
-      .initial(State::Foo)
-      .transition(State::Foo, Event::A, State::Foo)
-      .on_enter(State::Foo, move |_from, _event, _to| {
+    let mut machine = machine! {
+      initial: State::Foo,
+      State::Foo, Event::A => State::Foo,
+      on_enter State::Foo => move |_from, _event, _to| {
         counter.set(counter.get() + 1);
-      })
-      .build()
-      .unwrap();
+      },
+    }
+    .unwrap();
 
     machine.send(Event::A).unwrap();
 
     assert_eq!(count.get(), 1);
+  }
+
+  #[test]
+  fn macro_transitions_only() {
+    let mut machine = machine! {
+      initial: State::Foo,
+      State::Foo, Event::A => State::Bar,
+    }
+    .unwrap();
+
+    assert_eq!(machine.send(Event::A).unwrap(), &State::Bar);
+  }
+
+  #[test]
+  fn macro_initial_only() {
+    let machine: Machine<State, Event> = machine! {
+      initial: State::Foo,
+    }
+    .unwrap();
+
+    assert_eq!(machine.state(), &State::Foo);
   }
 }
