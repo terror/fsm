@@ -7,6 +7,8 @@ use {
   thiserror::Error,
 };
 
+type Callback<S, E> = Box<dyn Fn(&S, &E, &S)>;
+
 #[derive(Debug, Error)]
 pub enum Error<S: Display + fmt::Debug, E: Display + fmt::Debug> {
   #[error("no initial state set")]
@@ -15,9 +17,11 @@ pub enum Error<S: Display + fmt::Debug, E: Display + fmt::Debug> {
   NoTransition { state: S, event: E },
 }
 
-#[derive(Debug)]
 pub struct Builder<S, E> {
   initial: Option<S>,
+  on_enter: HashMap<S, Vec<Callback<S, E>>>,
+  on_exit: HashMap<S, Vec<Callback<S, E>>>,
+  on_transition: Vec<Callback<S, E>>,
   transitions: HashMap<(S, E), S>,
 }
 
@@ -25,8 +29,30 @@ impl<S, E> Default for Builder<S, E> {
   fn default() -> Self {
     Self {
       initial: None,
+      on_enter: HashMap::new(),
+      on_exit: HashMap::new(),
+      on_transition: Vec::new(),
       transitions: HashMap::new(),
     }
+  }
+}
+
+impl<S, E> fmt::Debug for Builder<S, E>
+where
+  S: fmt::Debug,
+  E: fmt::Debug,
+{
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.debug_struct("Builder")
+      .field("initial", &self.initial)
+      .field("on_enter", &format!("[{} hooks]", self.on_enter.len()))
+      .field("on_exit", &format!("[{} hooks]", self.on_exit.len()))
+      .field(
+        "on_transition",
+        &format!("[{} hooks]", self.on_transition.len()),
+      )
+      .field("transitions", &self.transitions)
+      .finish()
   }
 }
 
@@ -39,10 +65,11 @@ where
   ///
   /// Returns `Error::NoInitialState` if no initial state was set.
   pub fn build(self) -> Result<Machine<S, E>, Error<S, E>> {
-    let state = self.initial.ok_or(Error::NoInitialState)?;
-
     Ok(Machine {
-      state,
+      on_enter: self.on_enter,
+      on_exit: self.on_exit,
+      on_transition: self.on_transition,
+      state: self.initial.ok_or(Error::NoInitialState)?,
       transitions: self.transitions,
     })
   }
@@ -59,36 +86,115 @@ where
   }
 
   #[must_use]
+  pub fn on_enter(
+    mut self,
+    state: S,
+    callback: impl Fn(&S, &E, &S) + 'static,
+  ) -> Self {
+    self
+      .on_enter
+      .entry(state)
+      .or_default()
+      .push(Box::new(callback));
+
+    self
+  }
+
+  #[must_use]
+  pub fn on_exit(
+    mut self,
+    state: S,
+    callback: impl Fn(&S, &E, &S) + 'static,
+  ) -> Self {
+    self
+      .on_exit
+      .entry(state)
+      .or_default()
+      .push(Box::new(callback));
+
+    self
+  }
+
+  #[must_use]
+  pub fn on_transition(
+    mut self,
+    callback: impl Fn(&S, &E, &S) + 'static,
+  ) -> Self {
+    self.on_transition.push(Box::new(callback));
+    self
+  }
+
+  #[must_use]
   pub fn transition(mut self, from: S, event: E, to: S) -> Self {
     self.transitions.insert((from, event), to);
     self
   }
 }
 
-#[derive(Debug)]
 pub struct Machine<S, E> {
+  on_enter: HashMap<S, Vec<Callback<S, E>>>,
+  on_exit: HashMap<S, Vec<Callback<S, E>>>,
+  on_transition: Vec<Callback<S, E>>,
   state: S,
   transitions: HashMap<(S, E), S>,
+}
+
+impl<S, E> fmt::Debug for Machine<S, E>
+where
+  S: fmt::Debug,
+  E: fmt::Debug,
+{
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.debug_struct("Machine")
+      .field("on_enter", &format!("[{} hooks]", self.on_enter.len()))
+      .field("on_exit", &format!("[{} hooks]", self.on_exit.len()))
+      .field(
+        "on_transition",
+        &format!("[{} hooks]", self.on_transition.len()),
+      )
+      .field("state", &self.state)
+      .field("transitions", &self.transitions)
+      .finish()
+  }
 }
 
 impl<S, E> Machine<S, E>
 where
   S: Clone + Eq + Hash + Display + fmt::Debug,
-  E: Eq + Hash + Display + fmt::Debug,
+  E: Clone + Eq + Hash + Display + fmt::Debug,
 {
   /// # Errors
   ///
   /// Returns `Error::NoTransition` if no transition exists for the
   /// current state and event.
   pub fn send(&mut self, event: E) -> Result<&S, Error<S, E>> {
-    let key = (self.state.clone(), event);
+    let from = self.state.clone();
 
-    let to = self.transitions.get(&key).ok_or_else(|| {
-      let (state, event) = key;
-      Error::NoTransition { state, event }
-    })?;
+    let Some(to) = self
+      .transitions
+      .get(&(from.clone(), event.clone()))
+      .cloned()
+    else {
+      return Err(Error::NoTransition { state: from, event });
+    };
 
-    self.state = to.clone();
+    if let Some(hooks) = self.on_exit.get(&from) {
+      for hook in hooks {
+        hook(&from, &event, &to);
+      }
+    }
+
+    for hook in &self.on_transition {
+      hook(&from, &event, &to);
+    }
+
+    if let Some(hooks) = self.on_enter.get(&to) {
+      for hook in hooks {
+        hook(&from, &event, &to);
+      }
+    }
+
+    self.state = to;
 
     Ok(&self.state)
   }
@@ -114,7 +220,10 @@ macro_rules! machine {
 
 #[cfg(test)]
 mod tests {
-  use super::*;
+  use {
+    super::*,
+    std::{cell::Cell, rc::Rc},
+  };
 
   #[derive(Clone, Debug, Eq, Hash, PartialEq, derive_more::Display)]
   enum State {
@@ -204,5 +313,164 @@ mod tests {
 
     assert_eq!(machine.send(Event::A).unwrap(), &State::Foo);
     assert_eq!(machine.send(Event::A).unwrap(), &State::Foo);
+  }
+
+  #[test]
+  fn on_enter() {
+    let count = Rc::new(Cell::new(0));
+    let counter = count.clone();
+
+    let mut machine = Builder::new()
+      .initial(State::Foo)
+      .transition(State::Foo, Event::A, State::Bar)
+      .transition(State::Bar, Event::B, State::Baz)
+      .on_enter(State::Bar, move |_from, _event, _to| {
+        counter.set(counter.get() + 1);
+      })
+      .build()
+      .unwrap();
+
+    machine.send(Event::A).unwrap();
+    assert_eq!(count.get(), 1);
+
+    machine.send(Event::B).unwrap();
+    assert_eq!(count.get(), 1);
+  }
+
+  #[test]
+  fn on_exit() {
+    let count = Rc::new(Cell::new(0));
+    let counter = count.clone();
+
+    let mut machine = Builder::new()
+      .initial(State::Foo)
+      .transition(State::Foo, Event::A, State::Bar)
+      .transition(State::Bar, Event::B, State::Baz)
+      .on_exit(State::Foo, move |_from, _event, _to| {
+        counter.set(counter.get() + 1);
+      })
+      .build()
+      .unwrap();
+
+    machine.send(Event::A).unwrap();
+    assert_eq!(count.get(), 1);
+
+    machine.send(Event::B).unwrap();
+    assert_eq!(count.get(), 1);
+  }
+
+  #[test]
+  fn on_transition() {
+    let count = Rc::new(Cell::new(0));
+    let counter = count.clone();
+
+    let mut machine = Builder::new()
+      .initial(State::Foo)
+      .transition(State::Foo, Event::A, State::Bar)
+      .transition(State::Bar, Event::B, State::Baz)
+      .on_transition(move |_from, _event, _to| {
+        counter.set(counter.get() + 1);
+      })
+      .build()
+      .unwrap();
+
+    machine.send(Event::A).unwrap();
+    assert_eq!(count.get(), 1);
+
+    machine.send(Event::B).unwrap();
+    assert_eq!(count.get(), 2);
+  }
+
+  #[test]
+  fn callback_order() {
+    let log = Rc::new(Cell::new(Vec::new()));
+
+    let push = |log: &Rc<Cell<Vec<&'static str>>>, tag: &'static str| {
+      let mut v = log.take();
+      v.push(tag);
+      log.set(v);
+    };
+
+    let l = log.clone();
+    let on_exit = move |_: &State, _: &Event, _: &State| push(&l, "exit");
+
+    let l = log.clone();
+    let on_transition =
+      move |_: &State, _: &Event, _: &State| push(&l, "transition");
+
+    let l = log.clone();
+    let on_enter = move |_: &State, _: &Event, _: &State| push(&l, "enter");
+
+    let mut machine = Builder::new()
+      .initial(State::Foo)
+      .transition(State::Foo, Event::A, State::Bar)
+      .on_exit(State::Foo, on_exit)
+      .on_transition(on_transition)
+      .on_enter(State::Bar, on_enter)
+      .build()
+      .unwrap();
+
+    machine.send(Event::A).unwrap();
+
+    assert_eq!(log.take(), vec!["exit", "transition", "enter"]);
+  }
+
+  #[test]
+  fn callback_receives_context() {
+    let log = Rc::new(Cell::new(Vec::new()));
+    let l = log.clone();
+
+    let mut machine = Builder::new()
+      .initial(State::Foo)
+      .transition(State::Foo, Event::A, State::Bar)
+      .on_transition(move |from, event, to| {
+        let mut v = l.take();
+        v.push(format!("{from}+{event}=>{to}"));
+        l.set(v);
+      })
+      .build()
+      .unwrap();
+
+    machine.send(Event::A).unwrap();
+
+    assert_eq!(log.take(), vec!["Foo+A=>Bar"]);
+  }
+
+  #[test]
+  fn no_callbacks_on_failed_transition() {
+    let count = Rc::new(Cell::new(0));
+    let counter = count.clone();
+
+    let mut machine = Builder::new()
+      .initial(State::Foo)
+      .transition(State::Foo, Event::A, State::Bar)
+      .on_transition(move |_from, _event, _to| {
+        counter.set(counter.get() + 1);
+      })
+      .build()
+      .unwrap();
+
+    let _ = machine.send(Event::B);
+
+    assert_eq!(count.get(), 0);
+  }
+
+  #[test]
+  fn self_transition_fires_callbacks() {
+    let count = Rc::new(Cell::new(0));
+    let counter = count.clone();
+
+    let mut machine = Builder::new()
+      .initial(State::Foo)
+      .transition(State::Foo, Event::A, State::Foo)
+      .on_enter(State::Foo, move |_from, _event, _to| {
+        counter.set(counter.get() + 1);
+      })
+      .build()
+      .unwrap();
+
+    machine.send(Event::A).unwrap();
+
+    assert_eq!(count.get(), 1);
   }
 }
