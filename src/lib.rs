@@ -7,15 +7,11 @@ use {
   thiserror::Error,
 };
 
-type Callback<S, E> = Box<dyn Fn(&S, &E, &S)>;
+mod error;
 
-#[derive(Debug, Error)]
-pub enum Error<S: Display + fmt::Debug, E: Display + fmt::Debug> {
-  #[error("no initial state set")]
-  NoInitialState,
-  #[error("no transition from state `{state}` on event `{event}`")]
-  NoTransition { state: S, event: E },
-}
+pub use error::Error;
+
+type Callback<S, E> = Box<dyn Fn(&S, &E, &S)>;
 
 pub struct Builder<S, E> {
   initial: Option<S>,
