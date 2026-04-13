@@ -14,6 +14,7 @@ mod machine;
 pub use {builder::Builder, error::Error, machine::Machine};
 
 type Callback<S, E, C> = Box<dyn Fn(&S, &E, &S, &mut C)>;
+type Guard<S, E, C> = Box<dyn Fn(&S, &E, &C) -> bool>;
 
 #[macro_export]
 macro_rules! machine {
@@ -31,6 +32,9 @@ macro_rules! machine {
   };
   (@build [$($builder:tt)*] , on_transition => $callback:expr $(, $($rest:tt)*)?) => {
     $crate::machine!(@build [$($builder)*.on_transition($callback)] $(, $($rest)*)?)
+  };
+  (@build [$($builder:tt)*] , $from:expr, $event:expr => $to:expr, if $guard:expr $(, $($rest:tt)*)?) => {
+    $crate::machine!(@build [$($builder)*.transition_if($from, $event, $to, $guard)] $(, $($rest)*)?)
   };
   (@build [$($builder:tt)*] , $from:expr, $event:expr => $to:expr $(, $($rest:tt)*)?) => {
     $crate::machine!(@build [$($builder)*.transition($from, $event, $to)] $(, $($rest)*)?)
@@ -327,6 +331,86 @@ mod tests {
 
     assert_eq!(machine.send(Event::A).unwrap(), &State::Bar);
     assert_eq!(machine.state(), &State::Bar);
+  }
+
+  #[test]
+  fn guard_blocks_transition() {
+    let mut machine = machine! {
+      initial: State::Foo,
+      context: 0u32,
+      State::Foo, Event::A => State::Bar, if |_from, _event, ctx: &u32| *ctx > 0,
+    }
+    .unwrap();
+
+    assert_eq!(
+      machine.send(Event::A).unwrap_err().to_string(),
+      "no transition from state `Foo` on event `A`"
+    );
+  }
+
+  #[test]
+  fn guard_passes() {
+    let mut machine = machine! {
+      initial: State::Foo,
+      context: 1u32,
+      State::Foo, Event::A => State::Bar, if |_from, _event, ctx: &u32| *ctx > 0,
+    }
+    .unwrap();
+
+    assert_eq!(machine.send(Event::A).unwrap(), &State::Bar);
+  }
+
+  #[test]
+  fn guard_with_unguarded_fallback() {
+    let mut machine = machine! {
+      initial: State::Foo,
+      context: 0u32,
+      State::Foo, Event::A => State::Bar, if |_from, _event, ctx: &u32| *ctx > 0,
+      State::Foo, Event::A => State::Baz,
+    }
+    .unwrap();
+
+    assert_eq!(machine.send(Event::A).unwrap(), &State::Baz);
+
+    let mut machine = machine! {
+      initial: State::Foo,
+      context: 1u32,
+      State::Foo, Event::A => State::Bar, if |_from, _event, ctx: &u32| *ctx > 0,
+      State::Foo, Event::A => State::Baz,
+    }
+    .unwrap();
+
+    assert_eq!(machine.send(Event::A).unwrap(), &State::Bar);
+  }
+
+  #[test]
+  fn guard_first_match_wins() {
+    let mut machine = machine! {
+      initial: State::Foo,
+      context: 5u32,
+      State::Foo, Event::A => State::Bar, if |_from, _event, ctx: &u32| *ctx > 0,
+      State::Foo, Event::A => State::Baz, if |_from, _event, ctx: &u32| *ctx > 3,
+    }
+    .unwrap();
+
+    assert_eq!(machine.send(Event::A).unwrap(), &State::Bar);
+  }
+
+  #[test]
+  fn guard_fires_callbacks() {
+    let mut machine = machine! {
+      initial: State::Foo,
+      context: Vec::<String>::new(),
+      State::Foo, Event::A => State::Bar, if |_from, _event, _ctx: &Vec<String>| true,
+      on_transition => |from, _event, to, ctx: &mut Vec<String>| {
+        ctx.push(format!("{from}->{to}"));
+      },
+    }
+    .unwrap();
+
+    machine.send(Event::A).unwrap();
+
+    assert_eq!(machine.context(), &["Foo->Bar"]);
   }
 
   #[test]

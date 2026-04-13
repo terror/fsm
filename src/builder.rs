@@ -2,6 +2,7 @@ use super::*;
 
 pub struct Builder<S, E, C = ()> {
   context: Option<C>,
+  guarded_transitions: HashMap<(S, E), Vec<(Guard<S, E, C>, S)>>,
   initial: Option<S>,
   on_enter: HashMap<S, Vec<Callback<S, E, C>>>,
   on_exit: HashMap<S, Vec<Callback<S, E, C>>>,
@@ -13,6 +14,7 @@ impl<S, E, C: Default> Default for Builder<S, E, C> {
   fn default() -> Self {
     Self {
       context: Some(C::default()),
+      guarded_transitions: HashMap::new(),
       initial: None,
       on_enter: HashMap::new(),
       on_exit: HashMap::new(),
@@ -31,6 +33,10 @@ where
   fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
     f.debug_struct("Builder")
       .field("context", &self.context)
+      .field(
+        "guarded_transitions",
+        &format!("[{} keys]", self.guarded_transitions.len()),
+      )
       .field("initial", &self.initial)
       .field("on_enter", &format!("[{} hooks]", self.on_enter.len()))
       .field("on_exit", &format!("[{} hooks]", self.on_exit.len()))
@@ -55,6 +61,7 @@ where
   pub fn build(self) -> Result<Machine<S, E, C>, Error<S, E>> {
     Ok(Machine {
       context: self.context.ok_or(Error::NoContext)?,
+      guarded_transitions: self.guarded_transitions,
       on_enter: self.on_enter,
       on_exit: self.on_exit,
       on_transition: self.on_transition,
@@ -129,9 +136,27 @@ where
   }
 
   #[must_use]
+  pub fn transition_if(
+    mut self,
+    from: S,
+    event: E,
+    to: S,
+    guard: impl Fn(&S, &E, &C) -> bool + 'static,
+  ) -> Self {
+    self
+      .guarded_transitions
+      .entry((from, event))
+      .or_default()
+      .push((Box::new(guard), to));
+
+    self
+  }
+
+  #[must_use]
   pub fn with_context(context: C) -> Self {
     Self {
       context: Some(context),
+      guarded_transitions: HashMap::new(),
       initial: None,
       on_enter: HashMap::new(),
       on_exit: HashMap::new(),

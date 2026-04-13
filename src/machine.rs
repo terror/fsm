@@ -2,6 +2,7 @@ use super::*;
 
 pub struct Machine<S, E, C = ()> {
   pub(crate) context: C,
+  pub(crate) guarded_transitions: HashMap<(S, E), Vec<(Guard<S, E, C>, S)>>,
   pub(crate) on_enter: HashMap<S, Vec<Callback<S, E, C>>>,
   pub(crate) on_exit: HashMap<S, Vec<Callback<S, E, C>>>,
   pub(crate) on_transition: Vec<Callback<S, E, C>>,
@@ -18,6 +19,10 @@ where
   fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
     f.debug_struct("Machine")
       .field("context", &self.context)
+      .field(
+        "guarded_transitions",
+        &format!("[{} keys]", self.guarded_transitions.len()),
+      )
       .field("on_enter", &format!("[{} hooks]", self.on_enter.len()))
       .field("on_exit", &format!("[{} hooks]", self.on_exit.len()))
       .field(
@@ -49,12 +54,19 @@ where
   /// current state and event.
   pub fn send(&mut self, event: E) -> Result<&S, Error<S, E>> {
     let from = self.state.clone();
+    let key = (from.clone(), event.clone());
 
-    let Some(to) = self
-      .transitions
-      .get(&(from.clone(), event.clone()))
-      .cloned()
-    else {
+    let to = self
+      .guarded_transitions
+      .get(&key)
+      .and_then(|guards| {
+        guards.iter().find_map(|(guard, to)| {
+          guard(&from, &event, &self.context).then(|| to.clone())
+        })
+      })
+      .or_else(|| self.transitions.get(&key).cloned());
+
+    let Some(to) = to else {
       return Err(Error::NoTransition { state: from, event });
     };
 
