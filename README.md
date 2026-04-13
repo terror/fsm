@@ -1,3 +1,3 @@
 ## fsm
 
-A fininite state machine
+A finite state machine.
